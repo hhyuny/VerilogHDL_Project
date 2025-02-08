@@ -1,0 +1,571 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * File Name          : freertos.c
+  * Description        : Code for freertos applications
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "FreeRTOS.h"
+#include "task.h"
+#include "main.h"
+#include "cmsis_os.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "delay.h"
+#include "stdio.h"
+#include "dma.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+#define TRIG1_PORT       GPIOA
+#define TRIG1_PIN        GPIO_PIN_5
+
+#define TRIG2_PORT       GPIOA
+#define TRIG2_PIN        GPIO_PIN_4
+
+#define TRIG3_PORT       GPIOA
+#define TRIG3_PIN        GPIO_PIN_7
+
+#define TRIG4_PORT       GPIOC
+#define TRIG4_PIN        GPIO_PIN_9
+
+#define TRIG5_PORT       GPIOC
+#define TRIG5_PIN        GPIO_PIN_8
+
+#define wheelLeftEnFW_PORT      GPIOB
+#define wheelLeftEnBW_PORT      GPIOB
+#define wheelRightEnBW_PORT     GPIOB
+#define wheelRightEnFW_PORT     GPIOB
+#define wheelLeftEnFW_PIN      GPIO_PIN_1
+#define wheelLeftEnBW_PIN      GPIO_PIN_15
+#define wheelRightEnBW_PIN     GPIO_PIN_14
+#define wheelRightEnFW_PIN     GPIO_PIN_13
+
+#define speed100	5000
+#define speed75		speed100*3/4
+#define speed50		speed100/2
+#define speed25		speed100/4
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+#ifdef __GNUC__
+  /* With GCC, small printf (option LD Linker->Libraries->Small printf
+     set to 'Yes') calls __io_putchar() */
+  #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
+#else
+  #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
+#endif /* __GNUC__ */
+PUTCHAR_PROTOTYPE
+{
+  /* Place your implementation of fputc here */
+  /* e.g. write a character to the EVAL_COM1 and Loop until the end of transmission */
+  HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 0xFFFF);
+
+  return ch;
+}
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN Variables */
+uint32_t INC_Value1_1 = 0;
+uint32_t INC_Value1_2 = 0;
+uint32_t INC_Value2_1 = 0;
+uint32_t INC_Value2_2 = 0;
+uint32_t INC_Value3_1 = 0;
+uint32_t INC_Value3_2 = 0;
+uint32_t INC_Value4_1 = 0;
+uint32_t INC_Value4_2 = 0;
+uint32_t INC_Value5_1 = 0;
+uint32_t INC_Value5_2 = 0;
+uint32_t echoTime1 = 0;
+uint32_t echoTime2 = 0;
+uint32_t echoTime3 = 0;
+uint32_t echoTime4 = 0;
+uint32_t echoTime5 = 0;
+uint8_t captureFlag1 = 0;
+uint8_t captureFlag2 = 0;
+uint8_t captureFlag3 = 0;
+uint8_t captureFlag4 = 0;
+uint8_t captureFlag5 = 0;
+uint8_t distance1;
+uint8_t distance2;
+uint8_t distance3;
+uint8_t distance4;
+uint8_t distance5;
+
+
+/* USER CODE END Variables */
+osThreadId Task_Sonic1Handle;
+osThreadId Task_Enable_PWMHandle;
+osThreadId Task_UARTHandle;
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN FunctionPrototypes */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+
+  if(htim->Instance == TIM3){
+    //sonic 1
+    if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // if interrupt source channel
+    {
+      if(captureFlag1 == 0)        //first value is not capture
+      {
+        INC_Value1_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);      // read first value
+        captureFlag1 = 1;  // first captured as true
+
+        //change polarity to falling edge
+        __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+      }
+      else if (captureFlag1 == 1) // if first already capture
+      {
+        INC_Value1_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+        __HAL_TIM_SET_COUNTER(&htim3, 0);
+
+        if(INC_Value1_2 > INC_Value1_1)
+        {
+          echoTime1 = INC_Value1_2 - INC_Value1_1;
+        }
+        else if(INC_Value1_1 > INC_Value1_2)  // if overflow occured between value 1 and 2
+        {
+          echoTime1 = (0xffff - INC_Value1_1) + INC_Value1_2;
+        }
+        distance1 = echoTime1 / 58;
+        captureFlag1 = 0;
+        __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+        __HAL_TIM_DISABLE_IT(&htim3, TIM_IT_CC1);
+      }
+    }
+  }
+
+  else if(htim->Instance == TIM4){
+    //sonic 2
+     if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // if interrupt source channel
+        {
+          if(captureFlag2 == 0)        //first value is not capture
+          {
+            INC_Value2_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);      // read first value
+            captureFlag2 = 1;  // first captured as true
+
+            //change polarity to falling edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+          }
+          else if (captureFlag2 == 1) // if first already capture
+          {
+            INC_Value2_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+            __HAL_TIM_SET_COUNTER(&htim4, 0);
+
+            if(INC_Value2_2 > INC_Value2_1)
+            {
+              echoTime2 = INC_Value2_2 - INC_Value2_1;
+            }
+            else if(INC_Value2_1 > INC_Value2_2)  // if overflow occured between value 1 and 2
+            {
+              echoTime2 = (0xffff - INC_Value2_1) + INC_Value2_2;
+            }
+            distance2= echoTime2 / 58;
+            captureFlag2 = 0;
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+            __HAL_TIM_DISABLE_IT(&htim4, TIM_IT_CC1);
+          }
+        }
+  }
+     //sonic 3
+  else if(htim->Instance == TIM5){
+      if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // if interrupt source channel
+         {
+           if(captureFlag3 == 0)        //first value is not capture
+           {
+             INC_Value3_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);      // read first value
+             captureFlag3 = 1;  // first captured as true
+
+             //change polarity to falling edge
+             __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+           }
+           else if (captureFlag3 == 1) // if first already capture
+           {
+             INC_Value3_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+             __HAL_TIM_SET_COUNTER(&htim5, 0);
+
+             if(INC_Value3_2 > INC_Value3_1)
+             {
+               echoTime3 = INC_Value3_2 - INC_Value3_1;
+             }
+             else if(INC_Value3_1 > INC_Value3_2)  // if overflow occured between value 1 and 2
+             {
+               echoTime3 = (0xffff - INC_Value3_1) + INC_Value3_2;
+             }
+             distance3 = echoTime3 / 58;
+             captureFlag3 = 0;
+             __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+             __HAL_TIM_DISABLE_IT(&htim5, TIM_IT_CC1);
+           }
+         }
+  }
+  else if(htim->Instance == TIM10){
+	if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // if interrupt source channel
+	   {
+		 if(captureFlag4 == 0)        //first value is not capture
+		 {
+		   INC_Value4_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);      // read first value
+		   captureFlag4 = 1;  // first captured as true
+
+		   //change polarity to falling edge
+		   __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+		 }
+		 else if (captureFlag4 == 1) // if first already capture
+		 {
+		   INC_Value4_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+		   __HAL_TIM_SET_COUNTER(&htim10, 0);
+
+		   if(INC_Value4_2 > INC_Value4_1)
+		   {
+			 echoTime4 = INC_Value4_2 - INC_Value4_1;
+		   }
+		   else if(INC_Value4_1 > INC_Value4_2)  // if overflow occured between value 1 and 2
+		   {
+			 echoTime4 = (0xffff - INC_Value4_1) + INC_Value4_2;
+		   }
+		   distance4 = echoTime4 / 58;
+		   captureFlag4 = 0;
+		   __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+		   __HAL_TIM_DISABLE_IT(&htim10, TIM_IT_CC1);
+		 }
+	   }
+    }
+  else if(htim->Instance == TIM11){
+  	if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) // if interrupt source channel
+  	   {
+  		 if(captureFlag5 == 0)        //first value is not capture
+  		 {
+  		   INC_Value5_1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);      // read first value
+  		   captureFlag5 = 1;  // first captured as true
+
+  		   //change polarity to falling edge
+  		   __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+  		 }
+  		 else if (captureFlag5 == 1) // if first already capture
+  		 {
+  		   INC_Value5_2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+  		   __HAL_TIM_SET_COUNTER(&htim11, 0);
+
+  		   if(INC_Value5_2 > INC_Value5_1)
+  		   {
+  			 echoTime5 = INC_Value5_2 - INC_Value5_1;
+  		   }
+  		   else if(INC_Value5_1 > INC_Value5_2)  // if overflow occured between value 1 and 2
+  		   {
+  			 echoTime5 = (0xffff - INC_Value5_1) + INC_Value5_2;
+  		   }
+  		   distance5 = echoTime5 / 58;
+  		   captureFlag5 = 0;
+  		   __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+  		   __HAL_TIM_DISABLE_IT(&htim11, TIM_IT_CC1);
+  		 }
+  	   }
+      }
+}
+
+void HCSR04_Read(int num)
+{
+  switch(num)
+  {
+    case 1:
+        HAL_GPIO_WritePin(TRIG1_PORT, TRIG1_PIN, 1);    //Trig Pin Hign
+        delay_us(10);                                 //delay 10us
+        HAL_GPIO_WritePin(TRIG1_PORT, TRIG1_PIN, 0);    //Trig Pin Low
+      __HAL_TIM_ENABLE_IT(&htim3, TIM_IT_CC1);      //Set Timer Enable
+      break;
+    case 2:
+        HAL_GPIO_WritePin(TRIG2_PORT, TRIG2_PIN, 1);    //Trig Pin Hign
+        delay_us(10);                                 //delay 10us
+        HAL_GPIO_WritePin(TRIG2_PORT, TRIG2_PIN, 0);    //Trig Pin Low
+      __HAL_TIM_ENABLE_IT(&htim4, TIM_IT_CC1);      //Set Timer Enable
+      break;
+    case 3:
+      HAL_GPIO_WritePin(TRIG3_PORT, TRIG3_PIN, 1);    //Trig Pin Hign
+      delay_us(10);                                 //delay 10us
+      HAL_GPIO_WritePin(TRIG3_PORT, TRIG3_PIN, 0);    //Trig Pin Low
+      __HAL_TIM_ENABLE_IT(&htim5, TIM_IT_CC1);      //Set Timer Enable
+      break;
+    case 4:
+	  HAL_GPIO_WritePin(TRIG4_PORT, TRIG4_PIN, 1);    //Trig Pin Hign
+	  delay_us(10);                                 //delay 10us
+	  HAL_GPIO_WritePin(TRIG4_PORT, TRIG4_PIN, 0);    //Trig Pin Low
+	  __HAL_TIM_ENABLE_IT(&htim10, TIM_IT_CC1);      //Set Timer Enable
+	  break;
+    case 5:
+	  HAL_GPIO_WritePin(TRIG5_PORT, TRIG5_PIN, 1);    //Trig Pin Hign
+	  delay_us(10);                                 //delay 10us
+	  HAL_GPIO_WritePin(TRIG5_PORT, TRIG5_PIN, 0);    //Trig Pin Low
+	  __HAL_TIM_ENABLE_IT(&htim11, TIM_IT_CC1);      //Set Timer Enable
+	  break;
+  }
+}
+
+void MoveFront(void)
+{
+ __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);  //left
+ __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed100);  //right
+ HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+ HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+ HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+ HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+void MoveRight(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed75);
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 0);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 1);
+}
+void MoveBack(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);  //left
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed100);  //right
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 0);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 1);
+}
+void MoveLeft(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed75);  //left
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed100);  //right
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+void MoveRight_s(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed50);
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+void MoveLeft_s(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);  //left
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed50);  //right
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+void MoveRight_l(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed25);
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+void MoveLeft_l(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed100);  //left
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed25);  //right
+  HAL_GPIO_WritePin(wheelLeftEnFW_PORT, wheelLeftEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelRightEnFW_PORT, wheelRightEnFW_PIN, 1);
+  HAL_GPIO_WritePin(wheelLeftEnBW_PORT, wheelLeftEnBW_PIN, 0);
+  HAL_GPIO_WritePin(wheelRightEnBW_PORT, wheelRightEnBW_PIN, 0);
+}
+
+uint8_t Compare(uint8_t distance1, uint8_t distance2)
+{
+	if(distance1 > distance2) return distance1 - distance2;
+	else return 0;
+}
+
+/* USER CODE END FunctionPrototypes */
+
+void Sonic1(void const * argument);
+void Enable_PWM(void const * argument);
+void UART(void const * argument);
+
+void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
+
+/* GetIdleTaskMemory prototype (linked to static allocation support) */
+void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
+
+/* USER CODE BEGIN GET_IDLE_TASK_MEMORY */
+static StaticTask_t xIdleTaskTCBBuffer;
+static StackType_t xIdleStack[configMINIMAL_STACK_SIZE];
+
+void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize )
+{
+  *ppxIdleTaskTCBBuffer = &xIdleTaskTCBBuffer;
+  *ppxIdleTaskStackBuffer = &xIdleStack[0];
+  *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+  /* place for user code */
+}
+/* USER CODE END GET_IDLE_TASK_MEMORY */
+
+/**
+  * @brief  FreeRTOS initialization
+  * @param  None
+  * @retval None
+  */
+void MX_FREERTOS_Init(void) {
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of Task_Sonic1 */
+  osThreadDef(Task_Sonic1, Sonic1, osPriorityHigh, 0, 128);
+  Task_Sonic1Handle = osThreadCreate(osThread(Task_Sonic1), NULL);
+
+  /* definition and creation of Task_Enable_PWM */
+  osThreadDef(Task_Enable_PWM, Enable_PWM, osPriorityIdle, 0, 128);
+  Task_Enable_PWMHandle = osThreadCreate(osThread(Task_Enable_PWM), NULL);
+
+  /* definition and creation of Task_UART */
+  osThreadDef(Task_UART, UART, osPriorityIdle, 0, 128);
+  Task_UARTHandle = osThreadCreate(osThread(Task_UART), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+}
+
+/* USER CODE BEGIN Header_Sonic1 */
+/**
+  * @brief  Function implementing the Task_Sonic1 thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_Sonic1 */
+void Sonic1(void const * argument)
+{
+  /* USER CODE BEGIN Sonic1 */
+  /* Infinite loop */
+  for(;;)
+  {
+	//if(flag==1){
+    HCSR04_Read(1);
+    osDelay(15);
+    HCSR04_Read(2);
+    osDelay(15);
+    HCSR04_Read(3);
+    osDelay(15);
+    HCSR04_Read(4);
+	osDelay(15);
+	HCSR04_Read(5);
+	osDelay(15);
+    //flag = 0;} osDelay(1);
+  }
+  /* USER CODE END Sonic1 */
+}
+
+/* USER CODE BEGIN Header_Enable_PWM */
+/**
+* @brief Function implementing the Task_Enable_PWM thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Enable_PWM */
+void Enable_PWM(void const * argument)
+{
+  /* USER CODE BEGIN Enable_PWM */
+  /* Infinite loop */
+  for(;;)
+  {
+//	if(distance2<10) MoveBack();
+//	else if(distance3 < 10 || (distance2 < 40 && distance5 > 50)) MoveLeft();
+//	else if(distance1 < 10 || (distance2 < 40 && distance4 > 50)) MoveRight();
+//	else if(distance3 < 20 || distance4 < 10) MoveLeft_l();
+//	else if(distance1 < 20 || distance5 < 10) MoveRight_l();
+//	else if(distance3 < 30) MoveLeft_s();
+//	else if(distance1 < 30) MoveRight_s();
+//	else MoveFront();
+//	osDelay(70);
+//	  if(distance2<15) MoveBack();
+//	  	else if(distance2<40 && distance4 > 50) MoveRight();
+//	  	else if(distance2<40 && distance5 > 50) MoveLeft();
+//	  	else if(distance4 < 10) MoveLeft_s();
+//	  	else if(distance5 < 10) MoveRight_s();
+//	  	else if(distance1 < 20) MoveRight();
+//	  	else if(distance3 < 20) MoveLeft();
+//	  	else MoveFront();
+//	  osDelay(40);
+	  if(distance2<15) MoveBack();
+	  	  	else if(distance4 > 50) MoveRight();
+	  	  	else if(distance4 > 30) MoveRight_s();
+	  	  	else if(distance4 < 10) MoveLeft();
+	  	  	else if(distance4 < 15) MoveLeft_l();
+	  	  	else if(distance4 < 20) MoveLeft_s();
+	  	  	else MoveFront();
+	  	  osDelay(40);
+  }
+  /* USER CODE END Enable_PWM */
+}
+
+/* USER CODE BEGIN Header_UART */
+/**
+* @brief Function implementing the Task_UART thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_UART */
+void UART(void const * argument)
+{
+  /* USER CODE BEGIN UART */
+  /* Infinite loop */
+  for(;;)
+  {
+    printf("%3d cm  %3d cm  %3dcm  %3dcm  %3dcm\r\n",distance1, distance2, distance3, distance4, distance5 );
+    osDelay(200);
+  }
+  /* USER CODE END UART */
+}
+
+/* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
+
+/* USER CODE END Application */
